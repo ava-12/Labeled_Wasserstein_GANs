@@ -124,94 +124,6 @@ def compute_mmd(X, Y, kernel='rbf', gamma=1.0):
     
     return mmd.item()
 
-def graph_to_canonical_string(data):
-    """Convert graph to a canonical string representation for uniqueness/novelty checks"""
-    edge_index = data.edge_index.cpu().numpy()
-    num_nodes = data.x.size(0)
-    
-    # Create adjacency matrix
-    adj = np.zeros((num_nodes, num_nodes))
-    if edge_index.shape[1] > 0:
-        adj[edge_index[0], edge_index[1]] = 1
-        adj[edge_index[1], edge_index[0]] = 1  # Undirected
-    
-    # Get canonical form
-    G = nx.from_numpy_array(adj)
-    
-    try:
-        # Simple canonical form based on degree sequence and edges
-        degree_seq = sorted([d for n, d in G.degree()])
-        edges = sorted(list(G.edges()))
-        canonical = f"nodes:{num_nodes}_degrees:{degree_seq}_edges:{edges}"
-        return canonical
-    except:
-        return f"nodes:{num_nodes}_isolated"
-
-def compute_uniqueness(generated_graphs):
-    """Compute uniqueness of generated graphs"""
-    if not generated_graphs:
-        return 0.0
-    
-    canonical_forms = set()
-    for graph in generated_graphs:
-        canonical = graph_to_canonical_string(graph)
-        canonical_forms.add(canonical)
-    
-    return len(canonical_forms) / len(generated_graphs)
-
-def compute_novelty(generated_graphs, training_graphs):
-    """Compute novelty of generated graphs compared to training set"""
-    if not generated_graphs or not training_graphs:
-        return 0.0
-    
-    # Get canonical forms of training graphs
-    training_canonical = set()
-    for graph in training_graphs:
-        canonical = graph_to_canonical_string(graph)
-        training_canonical.add(canonical)
-    
-    # Check how many generated graphs are novel
-    novel_count = 0
-    for graph in generated_graphs:
-        canonical = graph_to_canonical_string(graph)
-        if canonical not in training_canonical:
-            novel_count += 1
-    
-    return novel_count / len(generated_graphs)
-
-def compute_validity(generated_graphs, min_nodes=3, max_nodes=50):
-    """Compute validity of generated graphs based on basic constraints"""
-    if not generated_graphs:
-        return 0.0
-    
-    valid_count = 0
-    for graph in generated_graphs:
-        num_nodes = graph.x.size(0)
-        num_edges = graph.edge_index.size(1)
-        
-        # Basic validity checks
-        is_valid = True
-        
-        # Check node count
-        if num_nodes < min_nodes or num_nodes > max_nodes:
-            is_valid = False
-        
-        # Check for self-loops (should not have any)
-        if num_edges > 0:
-            edge_index = graph.edge_index
-            if (edge_index[0] == edge_index[1]).any():
-                is_valid = False
-        
-        # Check for reasonable edge count (not too dense)
-        max_edges = num_nodes * (num_nodes - 1) // 2
-        if num_edges > max_edges:
-            is_valid = False
-        
-        if is_valid:
-            valid_count += 1
-    
-    return valid_count / len(generated_graphs)
-
 def extract_individual_graphs(batch_data, device):
     """
     Extract individual graphs from a batched PyG graph object.
@@ -369,7 +281,7 @@ def extract_graph_statistics(graphs, num_classes):
 
 def evaluate_model(generator, test_data_loader, train_data_loader, device, dataset_stats, num_classes, num_samples=500):
     """Comprehensive evaluation of the generator model using test set.
-    Computes validity, uniqueness, novelty, and MMD for degree, clustering, node labels, and orbit counts.
+    Computes MMD for degree, clustering, node labels, and orbit counts.
     """
     generator.eval()
     print("Starting model evaluation...")
@@ -387,16 +299,14 @@ def evaluate_model(generator, test_data_loader, train_data_loader, device, datas
     print(f"Collected {len(test_graphs)} test graphs.")
 
 
-    # ------------------------------
-    # Collect train graphs for novelty
-    # ------------------------------
+
     train_graphs = []
     for batch in train_data_loader:
         batch = batch.to(device)
         train_graphs.extend(extract_individual_graphs(batch, device))
         if len(train_graphs) >= 1000:  # Limit for efficiency
             break
-    print(f"Collected {len(train_graphs)} training graphs for novelty computation.")
+    print(f"Collected {len(train_graphs)} training graphs for computation.")
 
     # ------------------------------
     # Generate fake graphs
@@ -430,17 +340,7 @@ def evaluate_model(generator, test_data_loader, train_data_loader, device, datas
     print(f"MMD Node Labels: {mmd_label:.4f}")
     print(f"MMD Orbit Counts: {mmd_orbit:.4f}")
 
-    # ------------------------------
-    # Compute validity, uniqueness, novelty
-    # ------------------------------
-    # Uniqueness
-    uniqueness = compute_uniqueness(generated_graphs)
-    
-    # Novelty (comparing against TRAINING set)
-    novelty = compute_novelty(generated_graphs, train_graphs)
-    
-    # Validity
-    validity = compute_validity(generated_graphs)
+
     
     # Additional statistics
     test_stats = {
@@ -459,13 +359,10 @@ def evaluate_model(generator, test_data_loader, train_data_loader, device, datas
     print("\n" + "="*50)
     print("EVALUATION RESULTS")
     print("="*50)
-    print(f"Uniqueness:           {uniqueness:.4f}")
     print(f"MMD Degree:         {mmd_degree:.4f}")
     print(f"MMD Clustering:     {mmd_clust:.4f}")
     print(f"MMD Node Labels:     {mmd_label:.4f}")
     print(f"MMD Orbit Counts:     {mmd_orbit:.4f}")
-    print(f"Novelty:              {novelty:.4f}")
-    print(f"Validity:             {validity:.4f}")
     print("\nGraph Statistics Comparison:")
     print(f"Average Nodes  - Test: {test_stats['num_nodes']:.2f}, Generated: {gen_stats['num_nodes']:.2f}")
     print(f"Average Edges  - Test: {test_stats['num_edges']:.2f}, Generated: {gen_stats['num_edges']:.2f}")
@@ -477,9 +374,6 @@ def evaluate_model(generator, test_data_loader, train_data_loader, device, datas
         "mmd_clust": mmd_clust,
         "mmd_label": mmd_label,
         "mmd_orbit": mmd_orbit,
-        'uniqueness': uniqueness,
-        'novelty': novelty,
-        'validity': validity,
         'test_stats': test_stats,
         'generated_stats': gen_stats
     }
@@ -487,7 +381,7 @@ def evaluate_model(generator, test_data_loader, train_data_loader, device, datas
 
 def evaluate_class_specific(generator, test_data_loader, train_data_loader, device,
                             dataset_stats, num_classes, target_class=0, num_samples=150):
-    """Evaluate generator for a specific class, compute MMDs, uniqueness, novelty, validity."""
+    """Evaluate generator for a specific class, compute MMDs."""
     generator.eval()
     print(f"\nEvaluating Class {target_class} specifically...")
 
@@ -548,7 +442,7 @@ def evaluate_class_specific(generator, test_data_loader, train_data_loader, devi
     print(f"Collected {len(test_graphs_class)} test graphs for class {target_class}")
 
     # ------------------------------
-    # Collect training graphs for novelty
+    # Collect training graphs
     # ------------------------------
     train_graphs_class = []
     for batch in train_data_loader:
@@ -571,26 +465,19 @@ def evaluate_class_specific(generator, test_data_loader, train_data_loader, devi
     mmd_label  = compute_mmd(test_label, gen_label, kernel='rbf')
     mmd_orbit  = compute_mmd(test_orbit, gen_orbit, kernel='rbf')
 
-    # ------------------------------
-    # Other metrics
-    # ------------------------------
-    uniqueness_class = compute_uniqueness(generated_graphs_class)
-    validity_class = compute_validity(generated_graphs_class)
-    novelty_class = compute_novelty(generated_graphs_class, train_graphs_class)
+
 
     # Print results
     print(f"Class {target_class} Evaluation:")
     print(f"MMD Degree: {mmd_degree:.4f}, Clustering: {mmd_clust:.4f}, Labels: {mmd_label:.4f}, Orbit: {mmd_orbit:.4f}")
-    print(f"Uniqueness: {uniqueness_class:.4f}, Novelty: {novelty_class:.4f}, Validity: {validity_class:.4f}")
+
 
     return {
         'mmd_degree': mmd_degree,
         'mmd_clust': mmd_clust,
         'mmd_label': mmd_label,
         'mmd_orbit': mmd_orbit,
-        'uniqueness': uniqueness_class,
-        'novelty': novelty_class,
-        'validity': validity_class,
+
         'num_test': len(test_graphs_class),
         'num_generated': len(generated_graphs_class)
     }
@@ -642,8 +529,8 @@ def run_complete_evaluation(generator, train_loader, test_loader, device, datase
     print(" EVALUATION PROTOCOL:")
     print("• Model: Conditional WGAN-GP Graph Generator")
     print("• Evaluation Strategy: Generated vs Test Set Comparison")
-    print("• Novelty Assessment: Generated vs Training Set Comparison")
-    print("• Metrics: MMD (distributional), Uniqueness, Novelty, Validity")
+
+
     print("="*80)
     
     # 1. Overall evaluation (using test set)
@@ -679,25 +566,21 @@ def run_complete_evaluation(generator, train_loader, test_loader, device, datase
         f.write("EVALUATION METHODOLOGY:\n")
         f.write("- Model: Conditional WGAN-GP Graph Generator\n")
         f.write("- Ground Truth: Test set graphs (unseen during training)\n")
-        f.write("- Novelty Baseline: Training set graphs\n")
+
         f.write("- Sample Sizes: 300 overall, 150 per class\n")
         f.write("- Features: 6D structural (nodes, edges, density, degrees, clustering)\n")
         f.write("- MMD Kernels: RBF (gamma=1.0) and Linear\n\n")
         
         f.write("METRIC DEFINITIONS:\n")
         f.write("- MMD: Maximum Mean Discrepancy (lower = better distribution match)\n")
-        f.write("- Uniqueness: Fraction of unique generated graphs (higher = less mode collapse)\n")
-        f.write("- Novelty: Fraction of generated graphs not in training set (higher = more creative)\n")
-        f.write("- Validity: Fraction of structurally valid generated graphs (higher = better quality)\n\n")
+
         
         f.write("OVERALL RESULTS:\n")
         f.write(f"MMD DEGREE:     {overall_results['mmd_degree']:.6f}\n")
         f.write(f"MMD CLUSTERING:     {overall_results['mmd_clust']:.6f}\n")
         f.write(f"MMD LABELS:     {overall_results['mmd_label']:.6f}\n")
         f.write(f"MMD ORBIT:     {overall_results['mmd_orbit']:.6f}\n")
-        f.write(f"Uniqueness:           {overall_results['uniqueness']:.4f} ({overall_results['uniqueness']*100:.1f}%)\n")
-        f.write(f"Novelty:              {overall_results['novelty']:.4f} ({overall_results['novelty']*100:.1f}%)\n")
-        f.write(f"Validity:             {overall_results['validity']:.4f} ({overall_results['validity']*100:.1f}%)\n\n")
+
         
         f.write("STRUCTURAL STATISTICS:\n")
         f.write(f"Average Nodes  - Test: {overall_results['test_stats']['num_nodes']:.2f}, Generated: {overall_results['generated_stats']['num_nodes']:.2f}\n")
@@ -705,21 +588,17 @@ def run_complete_evaluation(generator, train_loader, test_loader, device, datase
         f.write(f"Average Density - Test: {overall_results['test_stats']['density']:.4f}, Generated: {overall_results['generated_stats']['density']:.4f}\n\n")
         
         f.write("CLASS-SPECIFIC RESULTS:\n")
-        f.write(f"Class 0 - MMD Degree: {class_0_results['mmd_degree']:.6f}, MMD Clustering: {class_0_results['mmd_clust']:.6f}, MMD Label: {class_0_results['mmd_label']:.6f}, MMD Orbit: {class_0_results['mmd_orbit']:.6f}, Uniqueness: {class_0_results['uniqueness']:.4f}, Novelty: {class_0_results['novelty']:.4f}, Validity: {class_0_results['validity']:.4f}\n")
-        f.write(f"Class 1 - MMD Degree: {class_1_results['mmd_degree']:.6f}, MMD Clustering: {class_1_results['mmd_clust']:.6f}, MMD Label: {class_1_results['mmd_label']:.6f}, MMD Orbit: {class_1_results['mmd_orbit']:.6f}, Uniqueness: {class_1_results['uniqueness']:.4f}, Novelty: {class_1_results['novelty']:.4f}, Validity: {class_1_results['validity']:.4f}\n\n")
+        f.write(f"Class 0 - MMD Degree: {class_0_results['mmd_degree']:.6f}, MMD Clustering: {class_0_results['mmd_clust']:.6f}, MMD Label: {class_0_results['mmd_label']:.6f}, MMD Orbit: {class_0_results['mmd_orbit']:.6f}")
+        f.write(f"Class 1 - MMD Degree: {class_1_results['mmd_degree']:.6f}, MMD Clustering: {class_1_results['mmd_clust']:.6f}, MMD Label: {class_1_results['mmd_label']:.6f}, MMD Orbit: {class_1_results['mmd_orbit']:.6f},\n")
         
         f.write("PERFORMANCE ASSESSMENT:\n")
         overall_mmd_quality = "Excellent" if overall_results['mmd_clust'] < 0.01 else "Good" if overall_results['mmd_clust'] < 0.1 else "Poor"
         f.write(f"Overall Distributional Quality: {overall_mmd_quality}\n")
-        f.write(f"Overall Diversity: {'High' if overall_results['uniqueness'] > 0.8 else 'Medium' if overall_results['uniqueness'] > 0.5 else 'Low'}\n")
-        f.write(f"Overall Novelty: {'High' if overall_results['novelty'] > 0.7 else 'Medium' if overall_results['novelty'] > 0.4 else 'Low'}\n")
-        f.write(f"Overall Validity: {'High' if overall_results['validity'] > 0.9 else 'Medium' if overall_results['validity'] > 0.7 else 'Low'}\n\n")
+        
         
         f.write("NOTES:\n")
         f.write("- Evaluation uses TEST SET for distributional comparison (MMD)\n")
-        f.write("- Novelty computed against TRAINING SET to detect memorization\n")
         f.write("- Lower MMD indicates better match to real data distribution\n")
-        f.write("- Higher Uniqueness/Novelty/Validity scores are better\n")
     
     print(f"\n Detailed evaluation report saved to: {results_file}")
     
@@ -727,9 +606,7 @@ def run_complete_evaluation(generator, train_loader, test_loader, device, datase
     print("                   EVALUATION SUMMARY")
     print("="*80)
     overall_mmd_quality = "Excellent" if overall_results['mmd_clust'] < 0.01 else "Good" if overall_results['mmd_clust'] < 0.1 else "Poor"
-    print(f" Diversity: {overall_results['uniqueness']*100:.1f}% unique graphs")
-    print(f" Creativity: {overall_results['novelty']*100:.1f}% novel graphs")
-    print(f" Quality: {overall_results['validity']*100:.1f}% valid graphs")
+
     print("="*80)
     print(" COMPREHENSIVE EVALUATION COMPLETE!")
     print("="*80)
@@ -979,9 +856,6 @@ def evaluate(generator, train_loader, test_loader, device, dataset_stats, num_cl
     print(f"Overall MMD Label: {results['overall']['mmd_label']:.6f}")
     print(f"Overall MMD Orbit: {results['overall']['mmd_orbit']:.6f}")
 
-    print(f"Uniqueness: {results['overall']['uniqueness']:.4f}")
-    print(f"Novelty: {results['overall']['novelty']:.4f}")
-    print(f"Validity: {results['overall']['validity']:.4f}")
     
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
