@@ -93,7 +93,7 @@ def graph_to_features(data):
     
     return np.array([num_nodes, num_edges, density, avg_degree, max_degree, clustering])
 
-def compute_mmd(X, Y, kernel='rbf', gamma=1.0):
+def compute_mmd(X, Y, kernel, gamma):
     """Compute Maximum Mean Discrepancy between two sets of samples"""
     X = torch.tensor(X, dtype=torch.float32)
     Y = torch.tensor(Y, dtype=torch.float32)
@@ -204,36 +204,6 @@ def clustering_distribution(graph):
     hist, _ = np.histogram(clust_coeffs, bins=10, range=(0, 1), density=True)
     return hist
 
-def node_label_distribution(graph, num_classes=None):
-    """
-    Compute the normalized histogram of node labels for a PyG Data object.
-    Ensures fixed-length output for MMD computation.
-    
-    Args:
-        graph: PyG Data object with graph.y (node labels)
-        num_classes: total number of classes in dataset
-    Returns:
-        hist: np.array of length num_classes, normalized
-    """
-    if not hasattr(graph, 'y') or graph.y is None:
-        # return uniform zero histogram if no labels
-        return np.zeros(num_classes if num_classes is not None else 1, dtype=float)
-
-    labels = graph.y.cpu().numpy().flatten()
-    
-    if num_classes is None:
-        num_classes = labels.max() + 1  # assume labels start at 0
-
-    hist = np.zeros(num_classes, dtype=float)
-    for l in labels:
-        hist[l] += 1
-
-    # Normalize to sum=1
-    if hist.sum() > 0:
-        hist /= hist.sum()
-
-    return hist
-
 def orbit_distribution(graph):
     """Return normalized orbit features (here: triangle density)."""
     num_triangles = sum(nx.triangles(graph).values()) / 3  # each triangle counted 3 times
@@ -250,17 +220,14 @@ def orbit_distribution(graph):
 
 def extract_graph_statistics(graphs, num_classes):
     """
-    Extracts degree, clustering, node label, and orbit distributions from a list of graphs.
+    Extracts degree, clustering and orbit distributions from a list of graphs.
     All outputs are aligned in dimension for MMD computation.
     """
-    degree_dists, clustering_dists, label_dists, orbit_dists = [], [], [], []
+    degree_dists, clustering_dists, orbit_dists = [], [], []
 
     for g in graphs:
         # Degree distribution (normalized histogram)
         degree_dists.append(degree_distribution(g))
-
-        # Label distribution (fixed-length histogram)
-        label_dists.append(node_label_distribution(g, num_classes=num_classes))
 
         # Convert to NetworkX
         G_nx = to_networkx(g, to_undirected=True)
@@ -274,14 +241,13 @@ def extract_graph_statistics(graphs, num_classes):
     return (
         np.array(degree_dists),
         np.array(clustering_dists),
-        np.array(label_dists),
-        np.array(orbit_dists),
+        np.array(orbit_dists)
     )
 
 
-def evaluate_model(generator, test_data_loader, train_data_loader, device, dataset_stats, num_classes, num_samples=500):
+def evaluate_model(generator, test_data_loader, train_data_loader, device, dataset_stats, num_classes, kernel ,gamma ,num_samples=500):
     """Comprehensive evaluation of the generator model using test set.
-    Computes MMD for degree, clustering, node labels, and orbit counts.
+    Computes MMD for degree, clustering and orbit counts.
     """
     generator.eval()
     print("Starting model evaluation...")
@@ -298,8 +264,9 @@ def evaluate_model(generator, test_data_loader, train_data_loader, device, datas
     test_graphs = test_graphs[:num_samples]
     print(f"Collected {len(test_graphs)} test graphs.")
 
-
-
+    # ------------------------------
+    # Collect train graphs 
+    # ------------------------------
     train_graphs = []
     for batch in train_data_loader:
         batch = batch.to(device)
@@ -327,21 +294,19 @@ def evaluate_model(generator, test_data_loader, train_data_loader, device, datas
     # ------------------------------
     # Compute MMD for each graph statistic
     # ------------------------------
-    test_degree, test_clust, test_label, test_orbit = extract_graph_statistics(test_graphs, num_classes)
-    gen_degree, gen_clust, gen_label, gen_orbit = extract_graph_statistics(generated_graphs, num_classes)
+    test_degree, test_clust, test_orbit = extract_graph_statistics(test_graphs, num_classes)
+    gen_degree, gen_clust, gen_orbit = extract_graph_statistics(generated_graphs, num_classes)
 
-    mmd_degree = compute_mmd(test_degree, gen_degree, kernel='rbf', gamma=1.0)
-    mmd_clust  = compute_mmd(test_clust, gen_clust, kernel='rbf', gamma=1.0)
-    mmd_label  = compute_mmd(test_label, gen_label, kernel='rbf', gamma=1.0)
-    mmd_orbit  = compute_mmd(test_orbit, gen_orbit, kernel='rbf', gamma=1.0)
+   
+
+    mmd_degree = compute_mmd(test_degree, gen_degree, kernel, gamma)
+    mmd_clust  = compute_mmd(test_clust, gen_clust, kernel, gamma)
+    mmd_orbit  = compute_mmd(test_orbit, gen_orbit, kernel, gamma)
 
     print(f"MMD Degree: {mmd_degree:.4f}")
     print(f"MMD Clustering: {mmd_clust:.4f}")
-    print(f"MMD Node Labels: {mmd_label:.4f}")
     print(f"MMD Orbit Counts: {mmd_orbit:.4f}")
 
-
-    
     # Additional statistics
     test_stats = {
         'num_nodes': np.mean([g.x.size(0) for g in test_graphs]),
@@ -361,8 +326,8 @@ def evaluate_model(generator, test_data_loader, train_data_loader, device, datas
     print("="*50)
     print(f"MMD Degree:         {mmd_degree:.4f}")
     print(f"MMD Clustering:     {mmd_clust:.4f}")
-    print(f"MMD Node Labels:     {mmd_label:.4f}")
     print(f"MMD Orbit Counts:     {mmd_orbit:.4f}")
+
     print("\nGraph Statistics Comparison:")
     print(f"Average Nodes  - Test: {test_stats['num_nodes']:.2f}, Generated: {gen_stats['num_nodes']:.2f}")
     print(f"Average Edges  - Test: {test_stats['num_edges']:.2f}, Generated: {gen_stats['num_edges']:.2f}")
@@ -372,15 +337,15 @@ def evaluate_model(generator, test_data_loader, train_data_loader, device, datas
     return {
         "mmd_degree": mmd_degree,
         "mmd_clust": mmd_clust,
-        "mmd_label": mmd_label,
         "mmd_orbit": mmd_orbit,
+
         'test_stats': test_stats,
         'generated_stats': gen_stats
     }
 
 
 def evaluate_class_specific(generator, test_data_loader, train_data_loader, device,
-                            dataset_stats, num_classes, target_class=0, num_samples=150):
+                            dataset_stats, num_classes,kernel, gamma ,target_class=0, num_samples=150):
     """Evaluate generator for a specific class, compute MMDs."""
     generator.eval()
     print(f"\nEvaluating Class {target_class} specifically...")
@@ -456,26 +421,23 @@ def evaluate_class_specific(generator, test_data_loader, train_data_loader, devi
     # ------------------------------
     # Compute graph statistics
     # ------------------------------
-    test_degree, test_clust, test_label, test_orbit = extract_graph_statistics(test_graphs_class, num_classes)
-    gen_degree, gen_clust, gen_label, gen_orbit = extract_graph_statistics(generated_graphs_class, num_classes)
+    test_degree, test_clust, test_orbit = extract_graph_statistics(test_graphs_class, num_classes)
+    gen_degree, gen_clust,gen_orbit = extract_graph_statistics(generated_graphs_class, num_classes)
 
     # Compute MMDs
-    mmd_degree = compute_mmd(test_degree, gen_degree, kernel='rbf')
-    mmd_clust  = compute_mmd(test_clust, gen_clust, kernel='rbf')
-    mmd_label  = compute_mmd(test_label, gen_label, kernel='rbf')
-    mmd_orbit  = compute_mmd(test_orbit, gen_orbit, kernel='rbf')
-
+    mmd_degree = compute_mmd(test_degree, gen_degree, kernel, gamma)
+    mmd_clust  = compute_mmd(test_clust, gen_clust, kernel, gamma)
+    mmd_orbit  = compute_mmd(test_orbit, gen_orbit, kernel, gamma)
 
 
     # Print results
     print(f"Class {target_class} Evaluation:")
-    print(f"MMD Degree: {mmd_degree:.4f}, Clustering: {mmd_clust:.4f}, Labels: {mmd_label:.4f}, Orbit: {mmd_orbit:.4f}")
+    print(f"MMD Degree: {mmd_degree:.4f}, Clustering: {mmd_clust:.4f}, Orbit: {mmd_orbit:.4f}")
 
 
     return {
         'mmd_degree': mmd_degree,
         'mmd_clust': mmd_clust,
-        'mmd_label': mmd_label,
         'mmd_orbit': mmd_orbit,
 
         'num_test': len(test_graphs_class),
@@ -520,7 +482,7 @@ def visualize_generated_graphs(generator, device, dataset_stats, num_samples=6):
 #  Main Evaluation Script
 # --------------------------
 
-def run_complete_evaluation(generator, train_loader, test_loader, device, dataset_stats, num_classes):
+def run_complete_evaluation(generator, train_loader, test_loader, device, dataset_stats, num_classes, kernel , gamma):
     """Run complete evaluation of a trained model"""
     
     print("\n" + "="*80)
@@ -530,11 +492,12 @@ def run_complete_evaluation(generator, train_loader, test_loader, device, datase
     print("• Model: Conditional WGAN-GP Graph Generator")
     print("• Evaluation Strategy: Generated vs Test Set Comparison")
 
-
     print("="*80)
-    
+
+    kernel = kernel
+    gamma = gamma
     # 1. Overall evaluation (using test set)
-    overall_results = evaluate_model(generator, test_loader, train_loader, device, dataset_stats, num_classes, num_samples=300)
+    overall_results = evaluate_model(generator, test_loader, train_loader, device, dataset_stats, num_classes, kernel, gamma, num_samples=300)
     
     # 2. Class-specific evaluation (using test set)
     print("\n" + "="*80)
@@ -544,8 +507,8 @@ def run_complete_evaluation(generator, train_loader, test_loader, device, datase
     print(" METHODOLOGY: Generate class-conditional samples and compare to class-specific test data")
     print("="*80)
     
-    class_0_results = evaluate_class_specific(generator, test_loader, train_loader, device, dataset_stats, num_classes, target_class=0, num_samples=150)
-    class_1_results = evaluate_class_specific(generator, test_loader, train_loader, device, dataset_stats, num_classes, target_class=1, num_samples=150)
+    class_0_results = evaluate_class_specific(generator, test_loader, train_loader, device, dataset_stats, num_classes,kernel, gamma, target_class=0, num_samples=150)
+    class_1_results = evaluate_class_specific(generator, test_loader, train_loader, device, dataset_stats, num_classes,kernel, gamma, target_class=1, num_samples=150)
     
     # 3. Visual inspection
     print("\n" + "="*80)
@@ -566,7 +529,6 @@ def run_complete_evaluation(generator, train_loader, test_loader, device, datase
         f.write("EVALUATION METHODOLOGY:\n")
         f.write("- Model: Conditional WGAN-GP Graph Generator\n")
         f.write("- Ground Truth: Test set graphs (unseen during training)\n")
-
         f.write("- Sample Sizes: 300 overall, 150 per class\n")
         f.write("- Features: 6D structural (nodes, edges, density, degrees, clustering)\n")
         f.write("- MMD Kernels: RBF (gamma=1.0) and Linear\n\n")
@@ -578,7 +540,6 @@ def run_complete_evaluation(generator, train_loader, test_loader, device, datase
         f.write("OVERALL RESULTS:\n")
         f.write(f"MMD DEGREE:     {overall_results['mmd_degree']:.6f}\n")
         f.write(f"MMD CLUSTERING:     {overall_results['mmd_clust']:.6f}\n")
-        f.write(f"MMD LABELS:     {overall_results['mmd_label']:.6f}\n")
         f.write(f"MMD ORBIT:     {overall_results['mmd_orbit']:.6f}\n")
 
         
@@ -588,17 +549,18 @@ def run_complete_evaluation(generator, train_loader, test_loader, device, datase
         f.write(f"Average Density - Test: {overall_results['test_stats']['density']:.4f}, Generated: {overall_results['generated_stats']['density']:.4f}\n\n")
         
         f.write("CLASS-SPECIFIC RESULTS:\n")
-        f.write(f"Class 0 - MMD Degree: {class_0_results['mmd_degree']:.6f}, MMD Clustering: {class_0_results['mmd_clust']:.6f}, MMD Label: {class_0_results['mmd_label']:.6f}, MMD Orbit: {class_0_results['mmd_orbit']:.6f}")
-        f.write(f"Class 1 - MMD Degree: {class_1_results['mmd_degree']:.6f}, MMD Clustering: {class_1_results['mmd_clust']:.6f}, MMD Label: {class_1_results['mmd_label']:.6f}, MMD Orbit: {class_1_results['mmd_orbit']:.6f},\n")
+        f.write(f"Class 0 - MMD Degree: {class_0_results['mmd_degree']:.6f}, MMD Clustering: {class_0_results['mmd_clust']:.6f}, MMD Orbit: {class_0_results['mmd_orbit']:.6f}\n")
+        f.write(f"Class 1 - MMD Degree: {class_1_results['mmd_degree']:.6f}, MMD Clustering: {class_1_results['mmd_clust']:.6f}, MMD Orbit: {class_1_results['mmd_orbit']:.6f}\n")
         
         f.write("PERFORMANCE ASSESSMENT:\n")
         overall_mmd_quality = "Excellent" if overall_results['mmd_clust'] < 0.01 else "Good" if overall_results['mmd_clust'] < 0.1 else "Poor"
         f.write(f"Overall Distributional Quality: {overall_mmd_quality}\n")
-        
+    
         
         f.write("NOTES:\n")
         f.write("- Evaluation uses TEST SET for distributional comparison (MMD)\n")
         f.write("- Lower MMD indicates better match to real data distribution\n")
+
     
     print(f"\n Detailed evaluation report saved to: {results_file}")
     
@@ -606,7 +568,6 @@ def run_complete_evaluation(generator, train_loader, test_loader, device, datase
     print("                   EVALUATION SUMMARY")
     print("="*80)
     overall_mmd_quality = "Excellent" if overall_results['mmd_clust'] < 0.01 else "Good" if overall_results['mmd_clust'] < 0.1 else "Poor"
-
     print("="*80)
     print(" COMPREHENSIVE EVALUATION COMPLETE!")
     print("="*80)
@@ -627,7 +588,7 @@ class ConditionalDiscriminator(nn.Module):
         self.class_embed_dim = hidden_dim  # embedding dim for classes
         self.class_embedding = nn.Embedding(class_dim, self.class_embed_dim)
         self.conv1 = GCNConv(input_dim, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        # self.conv2 = GCNConv(hidden_dim, hidden_dim)
         self.fc = nn.Linear(hidden_dim + self.class_embed_dim, 1)
 
     def forward(self, data, class_labels):
@@ -638,7 +599,7 @@ class ConditionalDiscriminator(nn.Module):
 
         # GCN node embeddings
         x = F.relu(self.conv1(x, edge_index))
-        x = F.relu(self.conv2(x, edge_index))
+        # x = F.relu(self.conv2(x, edge_index))
 
         # Pool to graph-level embeddings
         x = global_mean_pool(x, batch)
@@ -654,7 +615,7 @@ class ConditionalDiscriminator(nn.Module):
 #  Conditional Generator with Dynamic Node Count
 # --------------------------
 class ConditionalGenerator(nn.Module):
-    def __init__(self, noise_dim, class_dim, hidden_dim, out_node_feat_dim, class_embed_dim=16):
+    def __init__(self, noise_dim, class_dim, hidden_dim, out_node_feat_dim, class_embed_dim):
         super().__init__()
         self.noise_dim = noise_dim
         self.class_dim = class_dim
@@ -772,10 +733,10 @@ def compute_gradient_penalty(discriminator, real_data, fake_data, class_labels, 
 # --------------------------
 #  Training Loop
 # --------------------------
-def train(generator, discriminator, train_loader, n_critic, lambda_gp, epochs, device, dataset_stats, num_classes):
+def train(generator, discriminator, train_loader, n_critic, lambda_gp, epochs, lr_gen, betas_gen, lr_dis, betas_dis, dataset_stats, num_classes, device):
     
-    opt_g = torch.optim.Adam(generator.parameters(), lr=5e-5, betas=(0.0, 0.9))
-    opt_d = torch.optim.Adam(discriminator.parameters(), lr=1e-4, betas=(0.0, 0.9))
+    opt_g = torch.optim.Adam(generator.parameters(), lr=lr_gen, betas=betas_gen)
+    opt_d = torch.optim.Adam(discriminator.parameters(), lr=lr_dis, betas=betas_dis)
 
     for epoch in range(1, epochs+1):
         generator.train()
@@ -840,7 +801,7 @@ def train(generator, discriminator, train_loader, n_critic, lambda_gp, epochs, d
 #  Eval
 # --------------------------
 
-def evaluate(generator, train_loader, test_loader, device, dataset_stats, num_classes):
+def evaluate(generator, train_loader, test_loader, device, dataset_stats, num_classes, kernel , gamma):
 
     model_path = "./saved_models/ENZYMES_WGANGP/generator.pt"
     
@@ -849,11 +810,10 @@ def evaluate(generator, train_loader, test_loader, device, dataset_stats, num_cl
     generator.eval()
     print("Model loaded successfully!")
     
-    results = run_complete_evaluation(generator, train_loader, test_loader, device, dataset_stats, num_classes)
+    results = run_complete_evaluation(generator, train_loader, test_loader, device, dataset_stats, num_classes, kernel , gamma)
     print("\nQuick Summary:")
     print(f"Overall MMD Degree: {results['overall']['mmd_degree']:.6f}")
     print(f"Overall MMD Clustering: {results['overall']['mmd_clust']:.6f}")
-    print(f"Overall MMD Label: {results['overall']['mmd_label']:.6f}")
     print(f"Overall MMD Orbit: {results['overall']['mmd_orbit']:.6f}")
 
     
@@ -861,6 +821,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dataset = TUDataset(root='./data/ENZYMES', name='ENZYMES').shuffle()
+    num_node_features = dataset.num_node_features
     
     # Analyze dataset statistics before splitting
     print("Analyzing dataset statistics...")
@@ -868,23 +829,37 @@ def main():
     
     num_classes = dataset.num_classes
     
-    train_dataset, test_dataset = dataset[:500], dataset[500:]
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
 
+    # --------------------------
+    #  Parameters
+    # --------------------------
+
+    
+    batch_size = 16
     noise_dim = 16
     n_critic = 5
     lambda_gp = 10
     epochs = 30
+    hidden_dim_gen=32
+    hidden_dim_dis=64
+    lr_gen= 5e-5
+    betas_gen=(0.0, 0.9)
+    lr_dis=1e-4
+    betas_dis=(0.0, 0.9)
+    kernel='rbf'
+    gamma=1.0
+    class_embed_dim=16
 
-    num_node_features = dataset.num_node_features
-    print(f"Node features: {num_node_features}")
-    num_classes = dataset.num_classes
 
+    train_dataset, test_dataset = dataset[:500], dataset[500:]
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+ 
+ 
     generator = ConditionalGenerator(noise_dim=noise_dim, class_dim=num_classes,
-                                     hidden_dim=32, out_node_feat_dim=num_node_features).to(device)
+                                     hidden_dim=hidden_dim_gen, out_node_feat_dim=num_node_features,class_embed_dim = class_embed_dim).to(device)
     discriminator = ConditionalDiscriminator(input_dim=num_node_features,
-                                             class_dim=num_classes, hidden_dim=64).to(device)
+                                             class_dim=num_classes, hidden_dim=hidden_dim_dis).to(device)
     
     print(f"\nDataset info:")
     print(f"Total graphs: {len(dataset)}")
@@ -893,8 +868,8 @@ def main():
     print(f"Node features: {num_node_features}")
     print(f"Classes: {num_classes}")
     
-    train(generator, discriminator, train_loader, n_critic, lambda_gp, epochs, device, dataset_stats, num_classes)
-    evaluate(generator, train_loader, test_loader, device, dataset_stats, num_classes)
+    train(generator, discriminator, train_loader, n_critic, lambda_gp, epochs, lr_gen, betas_gen, lr_dis, betas_dis, dataset_stats[0], num_classes,device)
+    evaluate(generator, train_loader, test_loader, device, dataset_stats[0], num_classes, kernel , gamma)
 
 # --------------------------
 #  Usage Example
