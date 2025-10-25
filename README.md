@@ -22,7 +22,8 @@ Based on a Graph Convolutional Network (GCN) as in Kipf & Welling (2017).
 Aggregates node embeddings using global mean pooling to obtain a graph-level representation.
 Concatenates this with the class embedding and outputs a Wasserstein score D(G, y) — indicating how real and label-consistent a graph is.
 
-<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/155be277-5627-4c8e-833f-f60007d31e8f" />
+![Label vector y-3](https://github.com/user-attachments/assets/21b2a55d-65d0-4a20-ae4d-518be62fb815)
+
 
 
 ---
