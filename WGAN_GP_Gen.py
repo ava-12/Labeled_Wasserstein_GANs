@@ -820,7 +820,7 @@ def evaluate(generator, train_loader, test_loader, device, dataset_stats, num_cl
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dataset = TUDataset(root='./data/ENZYMES', name='ENZYMES').shuffle()
+    dataset = TUDataset(root='./data/PROTEINS', name='PROTEINS').shuffle()
     num_node_features = dataset.num_node_features
     
     # Analyze dataset statistics before splitting
